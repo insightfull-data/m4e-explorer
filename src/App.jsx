@@ -1,10 +1,7 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 const API = "https://web-production-7ef0a.up.railway.app";
 
-// ============================================================
-// DATA LAYER
-// ============================================================
 async function fetchAPI(path) {
   const res = await fetch(`${API}${path}`);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -15,29 +12,19 @@ async function fetchAPI(path) {
 // THEME
 // ============================================================
 const T = {
-  bg: "#08090d",
-  card: "#0f1117",
-  cardHover: "#151821",
-  border: "#1e2333",
-  borderLight: "#2c3452",
-  text: "#dce1ed",
-  textMuted: "#6b7a99",
-  textDim: "#455068",
-  amber: "#e8a838",
-  amberDim: "#e8a83833",
-  teal: "#2dd4a8",
-  tealDim: "#2dd4a822",
-  rose: "#e8436a",
-  roseDim: "#e8436a22",
-  blue: "#4d8bf5",
-  blueDim: "#4d8bf522",
+  bg: "#08090d", card: "#0f1117", cardHover: "#151821",
+  border: "#1e2333", borderLight: "#2c3452",
+  text: "#dce1ed", textMuted: "#6b7a99", textDim: "#455068",
+  amber: "#e8a838", amberDim: "#e8a83833",
+  teal: "#2dd4a8", tealDim: "#2dd4a822",
+  rose: "#e8436a", roseDim: "#e8436a22",
+  blue: "#4d8bf5", blueDim: "#4d8bf522",
   violet: "#9b72f2",
 };
 
 // ============================================================
-// COMPONENTS
+// SMALL COMPONENTS
 // ============================================================
-
 function Stat({ label, value, color = T.amber, sub }) {
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, padding: "20px 22px", flex: "1 1 170px", minWidth: 155 }}>
@@ -70,10 +57,8 @@ function Bar({ data, color = T.amber }) {
 function HHCard({ hh, onClick, selected }) {
   return (
     <div onClick={onClick} style={{
-      background: selected ? T.cardHover : T.card,
-      border: `1px solid ${selected ? T.amber : T.border}`,
-      borderRadius: 12, padding: 14, cursor: "pointer",
-      transition: "all 0.15s ease",
+      background: selected ? T.cardHover : T.card, border: `1px solid ${selected ? T.amber : T.border}`,
+      borderRadius: 12, padding: 14, cursor: "pointer", transition: "all 0.15s ease",
       boxShadow: selected ? `0 0 24px ${T.amberDim}` : "none",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
@@ -81,13 +66,10 @@ function HHCard({ hh, onClick, selected }) {
         <span style={{ fontSize: 10, color: T.textMuted, background: T.bg, padding: "2px 8px", borderRadius: 12 }}>{hh.household_type}</span>
       </div>
       <div style={{ display: "flex", gap: 10, fontSize: 11, color: T.textMuted, fontFamily: "'Fira Code', monospace" }}>
-        <span>{hh.tenure}</span>
-        <span style={{ color: T.textDim }}>·</span>
-        <span>{hh.size} person{hh.size > 1 ? "s" : ""}</span>
-        <span style={{ color: T.textDim }}>·</span>
+        <span>{hh.tenure}</span><span style={{ color: T.textDim }}>·</span>
+        <span>{hh.size} person{hh.size > 1 ? "s" : ""}</span><span style={{ color: T.textDim }}>·</span>
         <span style={{ color: T.teal }}>${hh.income?.toLocaleString()}</span>
       </div>
-      {hh.da_name && <div style={{ fontSize: 10, color: T.textDim, marginTop: 6 }}>{hh.da_name}</div>}
     </div>
   );
 }
@@ -116,6 +98,226 @@ function Loading() {
 }
 
 // ============================================================
+// MAP COMPONENT (Leaflet)
+// ============================================================
+function DAMap({ das, geojson, onSelectDA }) {
+  const mapRef = useRef(null);
+  const mapInstance = useRef(null);
+  const layerRef = useRef(null);
+  const [selectedDA, setSelectedDA] = useState(null);
+  const [metric, setMetric] = useState("population");
+  const [leafletReady, setLeafletReady] = useState(false);
+
+  // Load Leaflet
+  useEffect(() => {
+    if (window.L) { setLeafletReady(true); return; }
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+    document.head.appendChild(css);
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+    script.onload = () => setLeafletReady(true);
+    document.head.appendChild(script);
+  }, []);
+
+  // Color scale
+  const getColor = useCallback((value, min, max) => {
+    const t = max > min ? (value - min) / (max - min) : 0.5;
+    const colors = [
+      [45, 50, 80],    // dark blue
+      [29, 145, 120],  // teal
+      [45, 212, 168],  // bright teal
+      [232, 168, 56],  // amber
+      [232, 67, 106],  // rose
+    ];
+    const idx = Math.min(t * (colors.length - 1), colors.length - 1.001);
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    const f = idx - lo;
+    const r = Math.round(colors[lo][0] * (1 - f) + colors[hi][0] * f);
+    const g = Math.round(colors[lo][1] * (1 - f) + colors[hi][1] * f);
+    const b = Math.round(colors[lo][2] * (1 - f) + colors[hi][2] * f);
+    return `rgb(${r},${g},${b})`;
+  }, []);
+
+  // Build DA lookup
+  const daLookup = {};
+  if (das) das.forEach(d => { daLookup[d.da_id] = d; });
+
+  // Init map
+  useEffect(() => {
+    if (!leafletReady || !mapRef.current || mapInstance.current) return;
+    const L = window.L;
+    const map = L.map(mapRef.current, {
+      center: [43.675, -79.295],
+      zoom: 14,
+      zoomControl: true,
+      scrollWheelZoom: true,
+    });
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      attribution: '&copy; <a href="https://carto.com">CARTO</a>',
+      maxZoom: 19,
+    }).addTo(map);
+    mapInstance.current = map;
+    return () => { map.remove(); mapInstance.current = null; };
+  }, [leafletReady]);
+
+  // Render GeoJSON
+  useEffect(() => {
+    if (!leafletReady || !mapInstance.current || !geojson || !das?.length) return;
+    const L = window.L;
+    const map = mapInstance.current;
+
+    if (layerRef.current) { map.removeLayer(layerRef.current); }
+
+    const values = das.map(d => {
+      if (metric === "population") return d.population || 0;
+      if (metric === "avg_income") return d.avg_income || 0;
+      if (metric === "total_households") return d.total_households || 0;
+      return 0;
+    });
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+
+    const layer = L.geoJSON(geojson, {
+      style: (feature) => {
+        const daId = feature.properties.DAUID;
+        const da = daLookup[daId];
+        let val = 0;
+        if (da) {
+          if (metric === "population") val = da.population || 0;
+          if (metric === "avg_income") val = da.avg_income || 0;
+          if (metric === "total_households") val = da.total_households || 0;
+        }
+        const isSelected = selectedDA === daId;
+        return {
+          fillColor: getColor(val, min, max),
+          fillOpacity: isSelected ? 0.9 : 0.65,
+          weight: isSelected ? 3 : 1.5,
+          color: isSelected ? T.amber : "rgba(255,255,255,0.25)",
+          opacity: 1,
+        };
+      },
+      onEachFeature: (feature, featureLayer) => {
+        const daId = feature.properties.DAUID;
+        const da = daLookup[daId];
+        if (da) {
+          featureLayer.bindTooltip(
+            `<div style="font-family:monospace;font-size:11px;line-height:1.6">` +
+            `<strong>DA ${daId}</strong><br/>` +
+            `Pop: ${da.population?.toLocaleString() || "?"}<br/>` +
+            `HH: ${da.total_households?.toLocaleString() || "?"}<br/>` +
+            `</div>`,
+            { sticky: true, className: "da-tooltip" }
+          );
+        }
+        featureLayer.on("click", () => {
+          setSelectedDA(daId);
+          if (onSelectDA) onSelectDA(daId);
+        });
+        featureLayer.on("mouseover", () => {
+          featureLayer.setStyle({ weight: 2.5, fillOpacity: 0.8 });
+        });
+        featureLayer.on("mouseout", () => {
+          if (selectedDA !== daId) {
+            featureLayer.setStyle({ weight: 1.5, fillOpacity: 0.65 });
+          }
+        });
+      },
+    });
+
+    layer.addTo(map);
+    layerRef.current = layer;
+
+    // Fit bounds
+    const bounds = layer.getBounds();
+    if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] });
+  }, [leafletReady, geojson, das, metric, selectedDA]);
+
+  const daInfo = selectedDA ? daLookup[selectedDA] : null;
+
+  const metrics = [
+    { key: "population", label: "Population" },
+    { key: "avg_income", label: "Avg Income" },
+    { key: "total_households", label: "Households" },
+  ];
+
+  return (
+    <div>
+      <style>{`
+        .da-tooltip { background: ${T.card} !important; color: ${T.text} !important; border: 1px solid ${T.border} !important; border-radius: 8px !important; padding: 8px 12px !important; box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important; }
+        .da-tooltip .leaflet-tooltip-tip { display: none; }
+        .leaflet-container { background: ${T.bg} !important; }
+      `}</style>
+
+      {/* Metric selector */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
+        <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 2, color: T.textMuted, fontFamily: "'Fira Code', monospace" }}>Color by:</span>
+        {metrics.map(m => (
+          <button key={m.key} onClick={() => setMetric(m.key)} style={{
+            background: metric === m.key ? T.amber + "22" : T.card,
+            color: metric === m.key ? T.amber : T.textMuted,
+            border: `1px solid ${metric === m.key ? T.amber : T.border}`,
+            borderRadius: 8, padding: "5px 12px", fontSize: 11, cursor: "pointer",
+            fontFamily: "'Outfit', sans-serif", fontWeight: 600,
+          }}>{m.label}</button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+        {/* Map */}
+        <div style={{ flex: "1 1 500px", minWidth: 320 }}>
+          <div ref={mapRef} style={{
+            width: "100%", height: 520, borderRadius: 14,
+            border: `1px solid ${T.border}`, overflow: "hidden",
+          }} />
+
+          {/* Legend */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, justifyContent: "center" }}>
+            <span style={{ fontSize: 10, color: T.textDim, fontFamily: "'Fira Code', monospace" }}>Low</span>
+            <div style={{ width: 180, height: 8, borderRadius: 4, background: "linear-gradient(90deg, rgb(45,50,80), rgb(29,145,120), rgb(45,212,168), rgb(232,168,56), rgb(232,67,106))" }} />
+            <span style={{ fontSize: 10, color: T.textDim, fontFamily: "'Fira Code', monospace" }}>High</span>
+          </div>
+        </div>
+
+        {/* DA Detail panel */}
+        <div style={{ flex: "0 0 280px", minWidth: 250 }}>
+          {daInfo ? (
+            <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, padding: 20 }}>
+              <div style={{ fontFamily: "'Fira Code', monospace", fontSize: 12, color: T.amber, marginBottom: 4 }}>DA {selectedDA}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>Dissemination Area</div>
+
+              {[
+                { l: "Population", v: daInfo.population?.toLocaleString(), c: T.text },
+                { l: "Households", v: daInfo.total_households?.toLocaleString(), c: T.blue },
+                { l: "Avg Income", v: daInfo.avg_income ? `$${Math.round(daInfo.avg_income).toLocaleString()}` : "N/A", c: T.teal },
+                { l: "Land Area", v: `${daInfo.land_area || "?"} km²`, c: T.text },
+              ].map(item => (
+                <div key={item.l} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.border}` }}>
+                  <span style={{ fontSize: 11, color: T.textMuted }}>{item.l}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: item.c, fontFamily: "'Fira Code', monospace" }}>{item.v}</span>
+                </div>
+              ))}
+
+              <button onClick={() => { setSelectedDA(null); }} style={{
+                marginTop: 14, width: "100%", padding: "8px 0", background: T.bg, color: T.textMuted,
+                border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 11, cursor: "pointer",
+                fontFamily: "'Outfit', sans-serif",
+              }}>Clear selection</button>
+            </div>
+          ) : (
+            <div style={{ background: T.card, border: `1px dashed ${T.border}`, borderRadius: 14, padding: 40, textAlign: "center", color: T.textDim, fontSize: 13 }}>
+              Click a DA on the map to view details
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 export default function App() {
@@ -126,6 +328,7 @@ export default function App() {
   const [selectedHH, setSelectedHH] = useState(null);
   const [hhDetail, setHhDetail] = useState(null);
   const [daComparison, setDaComparison] = useState([]);
+  const [geojson, setGeojson] = useState(null);
   const [loading, setLoading] = useState(true);
   const [hhPage, setHhPage] = useState(0);
   const [filters, setFilters] = useState({ type: "All", tenure: "All", da: "All" });
@@ -134,10 +337,9 @@ export default function App() {
     Promise.all([
       fetchAPI("/api/stats/overview"),
       fetchAPI("/api/das"),
-    ]).then(([s, d]) => {
-      setStats(s);
-      setDas(d);
-      setLoading(false);
+      fetch("/m4e_boundaries.geojson").then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([s, d, geo]) => {
+      setStats(s); setDas(d); setGeojson(geo); setLoading(false);
     }).catch(e => { console.error(e); setLoading(false); });
   }, []);
 
@@ -157,13 +359,12 @@ export default function App() {
   useEffect(() => {
     if (selectedHH) {
       fetchAPI(`/api/households/${selectedHH}`).then(setHhDetail).catch(console.error);
-    } else {
-      setHhDetail(null);
-    }
+    } else { setHhDetail(null); }
   }, [selectedHH]);
 
   const tabs = [
     { key: "overview", label: "Overview" },
+    { key: "map", label: "Map" },
     { key: "households", label: "Households" },
     { key: "demographics", label: "Demographics" },
   ];
@@ -215,26 +416,16 @@ export default function App() {
               <Stat label="Avg Income" value={`$${Math.round(stats.avg_income || 0).toLocaleString()}`} color={T.rose} sub="per household" />
               <Stat label="DAs" value={stats.total_das} color={T.violet} sub="dissemination areas" />
             </div>
-
             <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
-              {/* Tenure */}
               <div style={{ flex: "1 1 280px" }}>
                 <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 2, color: T.textMuted, fontFamily: "'Fira Code', monospace", marginBottom: 12 }}>Tenure Split</div>
-                {stats.tenure_split && (
-                  <Bar data={stats.tenure_split.map(t => ({ label: t.tenure, value: t.count }))} color={T.teal} />
-                )}
+                {stats.tenure_split && <Bar data={stats.tenure_split.map(t => ({ label: t.tenure, value: t.count }))} color={T.teal} />}
               </div>
-
-              {/* Household Types */}
               <div style={{ flex: "1 1 340px" }}>
                 <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 2, color: T.textMuted, fontFamily: "'Fira Code', monospace", marginBottom: 12 }}>Household Types</div>
-                {stats.household_types && (
-                  <Bar data={stats.household_types.map(h => ({ label: h.household_type, value: h.count }))} color={T.blue} />
-                )}
+                {stats.household_types && <Bar data={stats.household_types.map(h => ({ label: h.household_type, value: h.count }))} color={T.blue} />}
               </div>
             </div>
-
-            {/* Methodology */}
             <div style={{ marginTop: 28, background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, padding: 20 }}>
               <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 2, color: T.amber, fontFamily: "'Fira Code', monospace", marginBottom: 10 }}>Methodology</div>
               <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.8 }}>
@@ -246,23 +437,23 @@ export default function App() {
           </div>
         )}
 
+        {/* MAP */}
+        {tab === "map" && (
+          <DAMap das={das} geojson={geojson} onSelectDA={(daId) => {}} />
+        )}
+
         {/* HOUSEHOLDS */}
         {tab === "households" && (
           <div>
-            {/* Filters */}
             <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
               <select value={filters.type} onChange={e => { setFilters(f => ({ ...f, type: e.target.value })); setHhPage(0); }}
                 style={{ background: T.card, color: T.text, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontFamily: "'Outfit', sans-serif" }}>
                 <option value="All">All Types</option>
-                {["Couple no children", "Couple with children", "Lone parent", "One-person", "Other"].map(t => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
+                {["Couple no children", "Couple with children", "Lone parent", "One-person", "Other"].map(t => <option key={t} value={t}>{t}</option>)}
               </select>
               <select value={filters.tenure} onChange={e => { setFilters(f => ({ ...f, tenure: e.target.value })); setHhPage(0); }}
                 style={{ background: T.card, color: T.text, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontFamily: "'Outfit', sans-serif" }}>
-                <option value="All">All Tenure</option>
-                <option value="Owner">Owner</option>
-                <option value="Renter">Renter</option>
+                <option value="All">All Tenure</option><option value="Owner">Owner</option><option value="Renter">Renter</option>
               </select>
               <select value={filters.da} onChange={e => { setFilters(f => ({ ...f, da: e.target.value })); setHhPage(0); }}
                 style={{ background: T.card, color: T.text, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontFamily: "'Outfit', sans-serif" }}>
@@ -270,9 +461,7 @@ export default function App() {
                 {das.map(d => <option key={d.da_id} value={d.da_id}>{d.da_id}</option>)}
               </select>
             </div>
-
             <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-              {/* List */}
               <div style={{ flex: "1 1 360px", minWidth: 280 }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {households.length === 0 && <div style={{ color: T.textMuted, padding: 30, textAlign: "center" }}>No households found</div>}
@@ -281,7 +470,6 @@ export default function App() {
                       onClick={() => setSelectedHH(selectedHH === hh.household_id ? null : hh.household_id)} />
                   ))}
                 </div>
-                {/* Pagination */}
                 <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "center", alignItems: "center" }}>
                   <button disabled={hhPage === 0} onClick={() => setHhPage(p => p - 1)}
                     style={{ background: T.card, color: hhPage === 0 ? T.textDim : T.text, border: `1px solid ${T.border}`, borderRadius: 6, padding: "5px 12px", cursor: hhPage === 0 ? "default" : "pointer", fontSize: 11, fontFamily: "'Outfit', sans-serif" }}>← Prev</button>
@@ -290,8 +478,6 @@ export default function App() {
                     style={{ background: T.card, color: households.length < 50 ? T.textDim : T.text, border: `1px solid ${T.border}`, borderRadius: 6, padding: "5px 12px", cursor: households.length < 50 ? "default" : "pointer", fontSize: 11, fontFamily: "'Outfit', sans-serif" }}>Next →</button>
                 </div>
               </div>
-
-              {/* Detail */}
               <div style={{ flex: "1 1 360px", minWidth: 280 }}>
                 {hhDetail ? (
                   <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, padding: 22 }}>
@@ -305,13 +491,10 @@ export default function App() {
                         <div style={{ fontSize: 10, color: T.textMuted }}>annual income</div>
                       </div>
                     </div>
-
                     <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
                       {[
-                        { l: "Tenure", v: hhDetail.tenure },
-                        { l: "Dwelling", v: hhDetail.dwelling_type },
-                        { l: "Size", v: `${hhDetail.size} person${hhDetail.size > 1 ? "s" : ""}` },
-                        { l: "DA", v: hhDetail.da_id },
+                        { l: "Tenure", v: hhDetail.tenure }, { l: "Dwelling", v: hhDetail.dwelling_type },
+                        { l: "Size", v: `${hhDetail.size} person${hhDetail.size > 1 ? "s" : ""}` }, { l: "DA", v: hhDetail.da_id },
                       ].map(i => (
                         <div key={i.l} style={{ background: T.bg, borderRadius: 8, padding: "7px 12px", flex: "1 1 100px" }}>
                           <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: 1, color: T.textDim }}>{i.l}</div>
@@ -319,7 +502,6 @@ export default function App() {
                         </div>
                       ))}
                     </div>
-
                     <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 2, color: T.textMuted, marginBottom: 8 }}>Members</div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {hhDetail.members?.map(m => <MemberRow key={m.individual_id} m={m} />)}
